@@ -1,0 +1,156 @@
+# Prometheus alerting rules for Linux hosts (node_exporter)
+# Thresholds are baselines for a general-purpose server; adjust per host class.
+# Assumes node_exporter >= 1.6 with the pressure collector enabled.
+
+groups:
+  - name: host-saturation
+    interval: 30s
+    rules:
+      - alert: HostCpuSaturation
+        expr: |
+          avg by (instance) (
+            rate(node_pressure_cpu_waiting_seconds_total[5m])
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "CPU pressure above 20% on {{ $labels.instance }}"
+          description: "Tasks are stalling waiting for CPU; check runqueue, steal, and container quotas."
+          runbook_url: "https://runbooks.example.com/host/cpu-saturation"
+
+      - alert: HostCpuThrottling
+        expr: |
+          rate(container_cpu_cfs_throttled_periods_total[5m])
+            / rate(container_cpu_cfs_periods_total[5m]) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} throttled >25% of periods"
+
+      - alert: HostMemoryPressure
+        expr: |
+          avg by (instance) (
+            rate(node_pressure_memory_waiting_seconds_total[5m])
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory pressure above 10% on {{ $labels.instance }}"
+          description: "Reclaim is stalling tasks; inspect MemAvailable, refaults, and process RSS growth."
+          runbook_url: "https://runbooks.example.com/host/memory-pressure"
+
+      - alert: HostMemoryCritical
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+          and on(instance)
+          rate(node_pressure_memory_stalled_seconds_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Memory exhaustion imminent on {{ $labels.instance }}"
+
+      - alert: HostOomKill
+        expr: increase(node_vmstat_oom_kill[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OOM kill occurred on {{ $labels.instance }}"
+          description: "A process was killed for memory. Size limits against peak working set; check container memory.max vs heap settings."
+
+      - alert: HostSwapThrashing
+        expr: rate(node_vmstat_pswpin[10m]) * 4096 > 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swap-in above 1MB/s on {{ $labels.instance }}"
+
+      - alert: HostDiskIoSaturation
+        expr: |
+          avg by (instance) (
+            rate(node_pressure_io_waiting_seconds_total[5m])
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "I/O pressure above 20% on {{ $labels.instance }}"
+          runbook_url: "https://runbooks.example.com/host/io-saturation"
+
+      - alert: HostFilesystemLowSpace
+        expr: |
+          node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|nfs"} / node_filesystem_size_bytes < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} below 10% on {{ $labels.instance }}"
+
+      - alert: HostFilesystemCriticalSpace
+        expr: |
+          node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|nfs"} / node_filesystem_size_bytes < 0.03
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem {{ $labels.mountpoint }} below 3% on {{ $labels.instance }}"
+
+      - alert: HostFilesystemInodesLow
+        expr: |
+          node_filesystem_files_free / node_filesystem_files < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inode exhaustion risk on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+
+      - alert: HostNetworkErrors
+        expr: |
+          rate(node_network_receive_errs_total{device!~"lo|veth|docker|cni"}[5m]) > 0
+          or
+          rate(node_network_transmit_errs_total{device!~"lo|veth|docker|cni"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Interface errors on {{ $labels.instance }} ({{ $labels.device }})"
+
+      - alert: HostConntrackNearLimit
+        expr: node_nf_conntrack_entries / node_nf_conntrack_entries_limit > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conntrack table above 80% on {{ $labels.instance }}"
+
+      - alert: HostLoadRunaway
+        expr: |
+          node_load15 / on(instance) count by (instance) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Load15 above 2x vCPU on {{ $labels.instance }}"
+          description: "Confirm runnable-vs-D-state split before acting; block I/O can inflate loadavg."
+
+      - alert: HostTimeDrift
+        expr: abs(node_timex_offset_seconds) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Clock offset above 500ms on {{ $labels.instance }}"
+
+      - alert: HostRaidDegraded
+        expr: node_md_disks{state="failed"} > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAID array degraded on {{ $labels.instance }}"

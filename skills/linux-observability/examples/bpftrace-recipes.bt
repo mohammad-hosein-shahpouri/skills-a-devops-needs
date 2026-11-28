@@ -1,0 +1,89 @@
+-- bpftrace recipes for host diagnostics
+-- Install: bpftrace (kernel >= 4.9 with BTF recommended)
+-- Run individually, time-boxed: bpftrace <file>  (or -e for one-liners)
+-- All probes are read-only observation; cost scales with event rate.
+
+// ─── 1. Block device latency histogram (request completion) ────────────────
+// Usage: bpftrace bpftrace-recipes.bt
+// Shows microseconds distribution per device for completed requests.
+tracepoint:block:block_rq_complete
+/args->nr_sector > 0/
+{
+    @start[args->dev, args->sector] = nsecs;
+}
+
+tracepoint:block:block_rq_complete
+{
+    $key = (args->dev, args->sector);
+    if (@start[$key]) {
+        @us[str(args->dev)] = hist((nsecs - @start[$key]) / 1000);
+        delete(@start[$key]);
+    }
+}
+
+// ─── 2. Scheduler wakeup-to-run delay (CPU pressure evidence) ──────────────
+// Shows how long tasks wait between becoming runnable and actually running.
+tracepoint:sched:sched_wakeup
+{
+    @wake[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_switch
+/@wake[args->prev_pid]/
+{
+    @sched_delay_us = hist((nsecs - @wake[args->prev_pid]) / 1000);
+    delete(@wake[args->prev_pid]);
+}
+
+// ─── 3. Slow syscalls by process (any syscall taking > 10ms) ───────────────
+tracepoint:raw_syscalls:sys_enter
+{
+    @sys_enter[tid] = nsecs;
+}
+
+tracepoint:raw_syscalls:sys_exit
+/@sys_enter[tid]/
+{
+    $delta = (nsecs - @sys_enter[tid]) / 1000;
+    if ($delta > 10000) {
+        @slow[comm, args->id] = hist($delta);
+    }
+    delete(@sys_enter[tid]);
+}
+
+// ─── 4. Directory read latency (who is slow opening files) ────────────────
+kprobe:vfs_open
+{
+    @open[tid] = nsecs;
+}
+
+kretprobe:vfs_open
+/@open[tid]/
+{
+    $delta = (nsecs - @open[tid]) / 1000;
+    if ($delta > 5000) {
+        @open_slow[comm] = hist($delta);
+    }
+    delete(@open[tid]);
+}
+
+// ─── 5. TCP retransmit attribution per destination ─────────────────────────
+kprobe:tcp_retransmit_skb
+{
+    @retrans[str(args->sk) ? "socket" : "unknown"] = count();
+}
+
+// ─── 6. Context switch rate by process (syscall churn detector) ────────────
+tracepoint:sched:sched_switch
+{
+    @ctx[comm] = count();
+}
+
+// ─── Notes ───────────────────────────────────────────────────────────────────
+// * Combine probes for one diagnostic question; do not run all at once on a
+//   busy host — event volume multiplies CPU overhead.
+// * Interval output: END { print(@us); clear(@us); } or use `interval:s:10`.
+// * If tracepoints are missing on this kernel, fall back to kprobes on the
+//   driver functions (`bpftrace -l 'kprobe:*blk*'`).
+// * Histograms are the default output shape: they reveal distribution, which
+//   single averages hide.

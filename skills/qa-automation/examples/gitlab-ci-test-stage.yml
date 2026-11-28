@@ -1,0 +1,161 @@
+# GitLab CI test stages: lint, unit, API, browser — with caching, artifacts,
+# ephemeral environments, and real gates. Adjust images/commands to the stack.
+
+stages:
+  - lint
+  - build
+  - test-api
+  - test-e2e
+
+variables:
+  # Deterministic test environment knobs
+  TZ: UTC
+  LANG: C.UTF-8
+  NODE_OPTIONS: --max-old-space-size=4096
+
+# ─── Reusable templates ──────────────────────────────────────────────────────
+.node-cache: &node-cache
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - package.json
+    paths:
+      - node_modules/
+      - .npm/
+
+# ─── 1. Lint and type check (fast first failure) ─────────────────────────────
+lint:
+  stage: lint
+  image: node:22-alpine
+  <<: *node-cache
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npm run lint
+    - npm run typecheck
+  artifacts:
+    when: always
+    reports:
+      junit: reports/lint-junit.xml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ─── 2. Build once, test the same artifact everywhere ───────────────────────
+build-image:
+  stage: build
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ─── 3. API smoke against a throwaway stack ─────────────────────────────────
+test-api:
+  stage: test-api
+  image: node:22-alpine
+  needs: [build-image]
+  <<: *node-cache
+  services:
+    - name: postgres:17-alpine
+      alias: db
+      variables:
+        POSTGRES_USER: app
+        POSTGRES_PASSWORD: testonly
+        POSTGRES_DB: appdb_test
+  variables:
+    BASE_URL: http://127.0.0.1:8080
+    DATABASE_URL: postgres://app:testonly@db:5432/appdb_test
+    RUN_ID: $CI_JOB_ID
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run db:migrate
+    - npm run db:seed:test
+    - npm run serve:test &
+    - npx wait-on http://127.0.0.1:8080/health --timeout 120000
+  script:
+    - npm run test:api
+    - ./scripts/api-smoke-tests.sh
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+      - api-smoke-junit.xml
+    reports:
+      junit:
+        - test-results/api-junit.xml
+        - api-smoke-junit.xml
+    expire_in: 14 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ─── 4. Browser smoke (critical journeys only, sharded) ─────────────────────
+test-e2e:
+  stage: test-e2e
+  image: mcr.microsoft.com/playwright:v1.50.0-noble
+  needs: [build-image]
+  <<: *node-cache
+  parallel: 2
+  variables:
+    BASE_URL: http://127.0.0.1:8080
+    RUN_ID: $CI_JOB_ID
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run serve:test &
+    - npx wait-on http://127.0.0.1:8080/health --timeout 120000
+  script:
+    - npx playwright test --project=smoke --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+      - playwright-report/
+    reports:
+      junit: test-results/junit.xml
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ─── 5. Nightly full suite (not merge-gating) ───────────────────────────────
+test-nightly-full:
+  stage: test-e2e
+  image: mcr.microsoft.com/playwright:v1.50.0-noble
+  <<: *node-cache
+  variables:
+    BASE_URL: http://127.0.0.1:8080
+    RUN_ID: nightly-$CI_PIPELINE_ID
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run serve:test &
+    - npx wait-on http://127.0.0.1:8080/health --timeout 120000
+  script:
+    - npx playwright test --project=chromium --project=firefox
+  artifacts:
+    when: always
+    paths: [ test-results/, playwright-report/ ]
+    reports:
+      junit: test-results/junit.xml
+    expire_in: 14 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  allow_failure: false
+
+# Notes:
+# - Gates: lint, test-api, test-e2e are required checks in the project settings.
+#   test-nightly-full runs on schedules and reports, never gates merges.
+# - Credentials here are throwaway values for ephemeral containers; real secrets
+#   come from CI variables (masked + protected) and are scoped to test envs.
+# - Pin images (node:22-alpine, playwright:v1.50.0-noble, postgres:17-alpine)
+#   rather than floating tags so the suite does not break on upstream updates.
+# - Keep the merge-gating path under ten minutes; measure stage p95 durations
+#   monthly and treat growth as a maintenance item.
