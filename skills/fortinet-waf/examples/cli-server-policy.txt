@@ -1,0 +1,87 @@
+# FortiWeb CLI walkthrough — reverse proxy server policy with SSL offload
+# Names and IPs are synthetic (RFC 5737, example.com). Adapt per environment.
+
+# ─── 1. Server pool with health check ────────────────────────────────────────
+config system server-pool
+    edit "sp-prod-shop"
+        set server-type HTTP
+        config members
+            edit 1
+                set ip 198.51.100.11
+                set port 8080
+            next
+            edit 2
+                set ip 198.51.100.12
+                set port 8080
+            next
+        end
+        set load-balance-method round-robin
+        set health-check "hc-shop-http"
+    next
+end
+
+# Health check: expect HTTP 200 on /healthz
+config system health-check
+    edit "hc-shop-http"
+        set type http
+        set http-get "/healthz"
+        set http-max-redirect 0
+        set interval 10
+        set timeout 3
+        set recovery 30
+    next
+end
+
+# ─── 2. Virtual server (public VIP, TLS offload) ─────────────────────────────
+config server-policy server-pool
+    edit "vs-prod-shop-443"
+        set type server-pool
+        set server-pool "sp-prod-shop"
+        set vip "198.51.100.200"
+        set client-http-port 80
+        set client-https-port 443
+        set server-http-port 8080
+        set server-https-port 8080
+        set ssl-certificate "shop.example.com"
+        set client-certificate-verification disable
+        set https-service ssl-offload      # terminate TLS at FortiWeb
+    next
+end
+
+# ─── 3. HTTP → HTTPS redirect policy (port 80 listener) ──────────────────────
+config server-policy policy
+    edit "pol-shop-redirect"
+        set http-traffic include
+        set client-http-port 80
+        set redirect-to-https enable
+        set web-protection-profile "wpp-empty"
+    next
+end
+
+# ─── 4. Main server policy binding the protection profile ───────────────────
+config server-policy policy
+    edit "pol-prod-shop"
+        set server-pool "sp-prod-shop"
+        set client-http-port 443
+        set web-protection-profile "wpp-prod-shop"
+        set script-list "cookie-persistence"
+        set access-list "acl-trusted-monitors"
+    next
+end
+
+# ─── 5. Verify ──────────────────────────────────────────────────────────────
+# Health of pool members:
+get server-policy server-pool sp-prod-shop
+# Session table through the VIP:
+diagnose system connection filter-vip 198.51.100.200
+# Live WAF decisions (time-boxed):
+diagnose debug application waf -1
+diagnose debug disable
+
+# ─── Notes ──────────────────────────────────────────────────────────────────
+# * Return path: real servers (198.51.100.11-12) must route replies back
+#   through FortiWeb — default gateway or policy routing.
+# * hc-shop-http is deliberately lenient (interval 10, recovery 30) to avoid
+#   flapping on brief origin hiccups; tune after measuring origin behavior.
+# * acl-trusted-monitors keeps synthetic probes out of WAF statistics.
+# * After any change on HA: execute ha force sync

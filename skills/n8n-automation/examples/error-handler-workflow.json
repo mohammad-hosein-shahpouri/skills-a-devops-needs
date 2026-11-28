@@ -1,0 +1,90 @@
+{
+  "name": "ops-error-handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            { "name": "workflow_name", "value": "={{ $json.workflow.name }}" },
+            { "name": "workflow_id", "value": "={{ $json.workflow.id }}" },
+            { "name": "execution_id", "value": "={{ $json.execution.id }}" },
+            { "name": "execution_url", "value": "={{ $json.execution.url }}" },
+            { "name": "failed_node", "value": "={{ $json.execution.lastNodeExecuted }}" },
+            { "name": "error_message", "value": "={{ $json.execution.error.message }}" },
+            { "name": "occurred_at", "value": "={{ new Date().toISOString() }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Enrich",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO n8n_dead_letters (workflow_name, workflow_id, execution_id, failed_node, error_message, occurred_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ $json.workflow_name }},{{ $json.workflow_id }},{{ $json.execution_id }},{{ $json.failed_node }},{{ $json.error_message }},{{ $json.occurred_at }}"
+        }
+      },
+      "name": "Dead Letter Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "credentials": {
+        "postgres": { "id": "db-n8n-state", "name": "n8n state db" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://telegram-bot.example.internal/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"channel\": \"ops-errors\", \"text\": \"n8n failure: \" + $json.workflow_name + \" @ \" + $json.failed_node + \" — \" + $json.error_message + \" (\" + $json.execution_url + \")\" } }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Notify Ops",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 0],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [880, 0]
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [ [ { "node": "Enrich", "type": "main", "index": 0 } ] ] },
+    "Enrich": { "main": [ [ { "node": "Dead Letter Record", "type": "main", "index": 0 } ] ] },
+    "Dead Letter Record": { "main": [ [ { "node": "Notify Ops", "type": "main", "index": 0 } ] ] },
+    "Notify Ops": { "main": [ [ { "node": "Done", "type": "main", "index": 0 } ] ] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "active": true,
+  "notesInFlow": [
+    {
+      "position": [-220, -80],
+      "parameters": { "content": "Error workflow: assigned to every production workflow. Trivial by design — it must not fail.\nAlerts on dead-letter count growth are configured in the NOC monitor." }
+    }
+  ]
+}

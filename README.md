@@ -154,6 +154,51 @@ Comprehensive reference for Cilium v1.20.5 eBPF-based cloud-native networking, s
 
 ---
 
+### [FortiWeb WAF](./skills/fortinet-waf/SKILL.md)
+Operations reference for FortiWeb 7.x as a web application firewall in front of CDN origins and web services — deployment modes, the protection profile stack, SSL, HA, logging, and automation.
+
+#### Coverage
+
+- **Architecture & Deployment**: reverse proxy / transparent / bridge / sniffer modes, request processing order, virtual servers and server policies, server pools with health checks, routing modes, VDOM.
+- **Web Protection Profiles**: layered stack design (access control → DoS L3/L4 → bot mitigation → ML anomaly → signatures), per-URL-class strictness, change records, rollout sequence.
+- **Signatures & ML Tuning**: attack log anatomy, false-positive workflow with scoped exceptions, severity-based enforcement phases, ML training/threshold lifecycle, custom signature rules.
+- **SSL & Certificates**: termination and offloading, SNI, Let's Encrypt/ACME, HSTS discipline, behind-CDN patterns (origin bypass prevention, forwarded-IP).
+- **HA & Hardening**: active-passive/active-active, session sync, failover drill procedure, admin and platform hardening, upgrade path.
+- **Logs & Incident Triage**: log types, five-way spike classification, blocking decision table, forwarded-IP handling, NOC metrics.
+- **Automation & Best Practices**: CLI diagnostics, REST API patterns, config-as-code with drift diff, change management, monitoring hooks, checklist and anti-patterns.
+
+---
+
+### [Veeam Backup & Replication](./skills/veeam/SKILL.md)
+Backup infrastructure that restores when it matters — architecture, job design, ransomware defense, verified restores, and NOC-grade monitoring for Veeam B&R v12.
+
+#### Coverage
+
+- **Architecture & Components**: backup server, proxies (hot-add/virtual appliance/network), repository types, SOBR, data flow and CBT.
+- **Jobs & Retention**: incremental forever, GFS on backup copy jobs, scheduling vs RPO, retention math for repository sizing, application-aware processing.
+- **Immutability & Ransomware Defense**: hardened Linux repositories, S3 Object Lock windows, encryption with password escrow, credential hygiene, intrusion indicators.
+- **Restore Workflows**: whole-VM, instant recovery, FLR, application-item, incident restore order (contain → point-in-time → tier order → evidence).
+- **SureBackup & Verification**: virtual labs, application groups, test scripts, failure interpretation, drills beyond SureBackup.
+- **Monitoring & Alerting**: PowerShell/REST health queries, metric map, NOC alert thresholds, noise control.
+- **Best Practices**: sizing rules, tier model, ransomware posture, verification culture, anti-patterns.
+
+---
+
+### [n8n Automation](./skills/n8n-automation/SKILL.md)
+n8n as the automation backbone for NOC pipelines — execution model, workflow design, webhook alert integrations with deduplication, credential hygiene, and failure handling that survives retries.
+
+#### Coverage
+
+- **Architecture & Execution**: regular vs queue mode (Redis + workers), execution retention and pruning, timeouts, backups including `N8N_ENCRYPTION_KEY`.
+- **Workflow Design Patterns**: trigger choice, intake→normalize→dedupe→fan-out, batch sweeps, sub-workflows, idempotency rules, naming.
+- **Nodes & Expressions**: core nodes, expression syntax and everyday patterns, error suppression vs handling, HTTP node essentials, Code node conventions.
+- **Credentials & Security**: credential store rules, env vars, webhook authentication layers (header/HMAC/mTLS/allow-list), network exposure, RBAC.
+- **Error Handling & Retries**: error workflows, retry discipline by idempotency, dead-letter design with replay, per-workflow-type failure semantics.
+- **Webhook NOC Integrations**: intake contract (fast 2xx), Zabbix/Grafana sender notes, deduplication keys, fan-out action table, routing rules, testing the pipeline.
+- **Best Practices**: version control and deploy path, testing including failure paths, naming conventions, operational hygiene, NOC metrics, anti-patterns.
+
+---
+
 ## Adding More Skills
 
 This repository is designed to host multiple database and engineering skills. When adding new skills (e.g. Vanilla PostgreSQL Tuning, Patroni, pgvector, or connection poolers):

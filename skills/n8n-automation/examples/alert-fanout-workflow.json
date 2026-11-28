@@ -1,0 +1,201 @@
+{
+  "name": "noc-alert-fanout",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "noc/alerts",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "noc-alerts-prod",
+      "credentials": {
+        "httpHeaderAuth": { "id": "svc-noc-webhook-in", "name": "noc intake header auth" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"accepted\": true, \"key\": $json.body.source + ':' + $json.body.alert_id } }}",
+        "options": {}
+      },
+      "name": "Fast ACK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            { "name": "source", "value": "={{ $json.body.source }}" },
+            { "name": "alert_id", "value": "={{ $json.body.alert_id }}" },
+            { "name": "action", "value": "={{ $json.body.action || 'page' }}" },
+            { "name": "severity", "value": "={{ ($json.body.severity || 'info').toLowerCase() }}" },
+            { "name": "team", "value": "={{ $json.body.labels?.team || 'unknown' }}" },
+            { "name": "summary", "value": "={{ $json.body.summary || $json.body.name || 'unnamed alert' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Normalize",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://redis-sidecar.internal:7379/SETEX/{{ $json.source }}:{{ $json.alert_id }}:{{ $json.action }}/3600/1",
+        "options": {}
+      },
+      "name": "Dedupe Mark",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "version": 2 },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.response }}",
+              "rightValue": "OK",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "critical",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "critical"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "warning",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "warning"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sms-gateway.example.internal/v1/send",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Idempotency-Key", "value": "={{ 'page:' + $json.source + ':' + $json.alert_id }}" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"recipient\": \"oncall-{{ $json.team }}\", \"text\": \"[\" + $json.severity + \"] \" + $json.summary } }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "SMS Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1320, -160],
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ticketing.example.internal/api/tickets",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"external_id\": $json.source + ':' + $json.alert_id, \"title\": \"[\" + $json.severity + \"] \" + $json.summary, \"team\": $json.team } }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Ticket Create-or-Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1320, 40],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "retryInterval": 5000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://telegram-bot.example.internal/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"channel\": \"noc-{{ $json.team }}\", \"text\": \"[\" + $json.severity + \"] \" + $json.summary } }}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Telegram Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1320, 240],
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": { "amount": 1, "unit": "seconds" },
+      "name": "Log Only (info)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1320, 440]
+    }
+  ],
+  "connections": {
+    "Webhook Intake": { "main": [ [ { "node": "Fast ACK", "type": "main", "index": 0 } ] ] },
+    "Fast ACK": { "main": [ [ { "node": "Normalize", "type": "main", "index": 0 } ] ] },
+    "Normalize": { "main": [ [ { "node": "Dedupe Mark", "type": "main", "index": 0 } ] ] },
+    "Dedupe Mark": { "main": [ [ { "node": "Is Duplicate?", "type": "main", "index": 0 } ] ] },
+    "Is Duplicate?": { "main": [ [ { "node": "Route by Severity", "type": "main", "index": 0 } ], [] ] },
+    "Route by Severity": {
+      "main": [
+        [ { "node": "SMS Page", "type": "main", "index": 0 }, { "node": "Telegram Notice", "type": "main", "index": 0 }, { "node": "Ticket Create-or-Update", "type": "main", "index": 0 } ],
+        [ { "node": "Telegram Notice", "type": "main", "index": 0 }, { "node": "Ticket Create-or-Update", "type": "main", "index": 0 } ],
+        [ { "node": "Log Only (info)", "type": "main", "index": 0 } ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": "ops-error-handler"
+  },
+  "active": true
+}
